@@ -51,9 +51,9 @@ jobs:
         env:
           BASE_URL: ${{ secrets.BASE_URL || vars.BASE_URL }}
           AES_KEY: ${{ secrets.AES_KEY }}
-          AGE_RECIPIENT: ${{ vars.AGE_RECIPIENT }}
-          MAX_WORKERS: ${{ vars.MAX_WORKERS }}
-          REQUEST_TIMEOUT: ${{ vars.REQUEST_TIMEOUT }}
+          AGE_RECIPIENT: ${{ secrets.AGE_RECIPIENT }}
+          MAX_WORKERS: ${{ secrets.MAX_WORKERS }}
+          REQUEST_TIMEOUT: ${{ secrets.REQUEST_TIMEOUT }}
           # Manual run with "download_all" unticked -> stop after 10 valid pages.
           # Every other trigger -> 0 = download all.
           MAX_VALID_PAGES: ${{ github.event_name == 'workflow_dispatch' && inputs.download_all == false && '10' || '0' }}
