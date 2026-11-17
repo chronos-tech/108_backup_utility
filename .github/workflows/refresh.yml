@@ -1,0 +1,54 @@
+name: Refresh sitemap
+
+# Discovers new post/page URLs and registers them (append-only).
+# Triggers: every 3 days, manual, or repository_dispatch (event type: refresh-sitemap).
+# No pull_request trigger on purpose: this workflow handles secrets and pushes.
+on:
+  schedule:
+    - cron: "17 3 */3 * *"   # 03:17 UTC on days 1,4,7,... of each month
+  workflow_dispatch:
+  repository_dispatch:
+    types: [refresh-sitemap]
+
+permissions:
+  contents: write
+
+# Shared with update.yml so only one workflow modifies data/ and cache/ at a time.
+concurrency:
+  group: repo-data-writers
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    # Only ever run (and push) on the default branch.
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Refresh sitemap
+        env:
+          # Prefer a Secret for BASE_URL: Variables are NOT masked and would be
+          # printed in this (public) log. The Variable is only a fallback.
+          BASE_URL: ${{ secrets.BASE_URL || vars.BASE_URL }}
+          AES_KEY: ${{ secrets.AES_KEY }}
+          MAX_WORKERS: ${{ vars.MAX_WORKERS }}
+          REQUEST_TIMEOUT: ${{ vars.REQUEST_TIMEOUT }}
+        run: python refresh.py
+
+      - name: Commit and push metadata
+        if: ${{ always() }}
+        run: |
+          bash scripts/commit_push.sh "chore: refresh sitemap registry"
