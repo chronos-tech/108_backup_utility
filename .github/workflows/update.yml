@@ -77,7 +77,7 @@ jobs:
           ) &
           SIDE=$!
           trap 'touch "$STOP"; wait "$SIDE" 2>/dev/null || true' EXIT
-          python update.py
+          python -u update.py
 
       - name: Commit and push metadata and encrypted cache
         # always(): also runs after failure, cancellation or timeout so progress is never dropped.
