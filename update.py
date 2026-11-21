@@ -181,13 +181,11 @@ def _build_work(registry: storage.Registry, cfg: Config, summary: UpdateSummary)
     if cfg.fetch_premium and not cfg.cookie:
         log.warning("FETCH_PREMIUM is true but COOKIE is not set; nothing to fetch.")
 
-    # Premium mode (FETCH_PREMIUM true) processes premium.json only; cache pages are skipped.
-    if not cfg.fetch_premium:
-        for token, rec in registry.cache.items():
-            if rec["status"] is True and registry.cache_file_exists(rec):
-                summary.skipped_cached += 1
-            else:
-                items.append((rec.get("last_checked_at") or "", token, "cache"))
+    for token, rec in registry.cache.items():
+        if rec["status"] is True and registry.cache_file_exists(rec):
+            summary.skipped_cached += 1
+        else:
+            items.append((rec.get("last_checked_at") or "", token, "cache"))
 
     for token, rec in registry.premium.items():
         done = rec["status"] is True and registry.cache_file_exists(rec)

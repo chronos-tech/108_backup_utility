@@ -40,6 +40,7 @@ def root(tmp_path):
     (tmp_path / "cache").mkdir()
     (tmp_path / "data" / "cache.json").write_text("{}\n")
     (tmp_path / "data" / "premium.json").write_text("{}\n")
+    (tmp_path / "data" / "denied.json").write_text("{}\n")
     return tmp_path
 
 

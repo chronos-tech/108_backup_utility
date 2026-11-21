@@ -185,6 +185,7 @@ def test_atomic_write_leaves_no_temp_files(root):
     assert not list((root / "data").glob(".tmp-*"))
 
 
+@pytest.mark.skipif(storage.fcntl is None, reason="fcntl unavailable on Windows")
 def test_lock_blocks_second_holder(root):
     with storage.file_lock(root):
         with pytest.raises(storage.StorageError):
