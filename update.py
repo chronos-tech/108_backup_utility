@@ -8,6 +8,10 @@ Modes (``MAX_VALID_PAGES``):
 
 Exit codes: 0 ok, 1 fatal (crypto/storage), 2 bad configuration,
 3 stopped early because the site returned repeated 403/429.
+
+Premium mode (``FETCH_PREMIUM`` true): only premium.json is processed (cache pages are
+skipped). ``MAX_PREMIUM_PAGES`` N > 0 attempts at most N premium pages, oldest-checked
+first; denied pages move to denied.json and count toward N.
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from src import crypto, fetcher, storage
@@ -59,6 +63,10 @@ class UpdateSummary:
     premium_denied: int = 0
     failed: int = 0
     robots_skipped: int = 0
+    premium_left: int = 0     # premium.json records still pending after the run
+    premium_total: int = 0
+    denied_total: int = 0
+    denied_shas: list[str] = field(default_factory=list)  # this run; sha only, never URLs
     deferred: int = 0       # eligible but not attempted (limit/stop)
     blocked_stop: bool = False
 
@@ -169,15 +177,18 @@ def process_item(item: WorkItem, cfg: Config, client: HttpClient,
 
 def _build_work(registry: storage.Registry, cfg: Config, summary: UpdateSummary) -> list[WorkItem]:
     items: list[tuple[str, str, str]] = []   # (last_checked, token, section)
-    for token, rec in registry.cache.items():
-        if rec["status"] is True and registry.cache_file_exists(rec):
-            summary.skipped_cached += 1
-        else:
-            items.append((rec.get("last_checked_at") or "", token, "cache"))
-
     can_auth = cfg.fetch_premium and bool(cfg.cookie)
     if cfg.fetch_premium and not cfg.cookie:
-        log.warning("FETCH_PREMIUM is true but COOKIE is not set; premium pages are not fetched.")
+        log.warning("FETCH_PREMIUM is true but COOKIE is not set; nothing to fetch.")
+
+    # Premium mode (FETCH_PREMIUM true) processes premium.json only; cache pages are skipped.
+    if not cfg.fetch_premium:
+        for token, rec in registry.cache.items():
+            if rec["status"] is True and registry.cache_file_exists(rec):
+                summary.skipped_cached += 1
+            else:
+                items.append((rec.get("last_checked_at") or "", token, "cache"))
+
     for token, rec in registry.premium.items():
         done = rec["status"] is True and registry.cache_file_exists(rec)
         if done or not can_auth:
@@ -186,6 +197,9 @@ def _build_work(registry: storage.Registry, cfg: Config, summary: UpdateSummary)
             items.append((rec.get("last_checked_at") or "", token, "premium"))
 
     items.sort()  # never-attempted first, then least recently checked
+    if can_auth and cfg.max_premium_pages and len(items) > cfg.max_premium_pages:
+        summary.deferred += len(items) - cfg.max_premium_pages
+        items = items[:cfg.max_premium_pages]
     return [WorkItem(token, registry.url_for(token), section) for _, token, section in items]
 
 
@@ -225,6 +239,10 @@ def run_update(cfg: Config, root: Path, client: HttpClient | None = None,
             executor.shutdown(wait=False, cancel_futures=True)
         summary.blocked_stop = state.blocked_stop
 
+    summary.premium_total = len(registry.premium)
+    summary.premium_left = sum(1 for r in registry.premium.values() if r.get("status") is not True)
+    summary.denied_total = len(registry.denied)
+
     log.info("Skipped %d successfully cached records.", summary.skipped_cached)
     log.info("Fetched %d pages successfully.", summary.fetched)
     log.info("Detected %d premium pages.", summary.premium_detected)
@@ -237,7 +255,28 @@ def run_update(cfg: Config, root: Path, client: HttpClient | None = None,
         log.info("%d eligible pages left for a later run.", summary.deferred)
     if summary.blocked_stop:
         log.warning("Stopped early: site returned repeated 403/429 responses.")
+    if cfg.fetch_premium:
+        _report_premium(summary)
     return summary
+
+
+def _report_premium(summary: UpdateSummary) -> None:
+    """Premium run report: counts and sha256 identifiers only, never URLs."""
+    lines = [
+        f"Premium left: {summary.premium_left} of {summary.premium_total} pending in premium.json.",
+        f"Premium denied this run: {len(summary.denied_shas)} "
+        f"(denied.json total: {summary.denied_total}).",
+    ]
+    lines += [f"Denied: {sha}" for sha in summary.denied_shas]
+    for line in lines:
+        log.info("%s", line)
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if path:
+        try:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write("### Premium run\n\n" + "\n".join(f"- {l}" for l in lines) + "\n")
+        except OSError:
+            log.warning("Could not write the step summary.")
 
 
 def _apply(out: Outcome, registry: storage.Registry, root: Path, recipient,
@@ -270,6 +309,12 @@ def _apply(out: Outcome, registry: storage.Registry, root: Path, recipient,
         summary.failed += 1
         return
 
+    if out.kind == "premium_denied":
+        denied = registry.move_to_denied(item.token, out.http_status, now)
+        summary.denied_shas.append(denied["sha"])
+        summary.premium_denied += 1
+        return
+
     rec = registry.premium[item.token]
     rec["last_checked_at"] = now
     rec["http_status"] = out.http_status
@@ -277,8 +322,6 @@ def _apply(out: Outcome, registry: storage.Registry, root: Path, recipient,
         _write_cache_file(root, rec, out.html, recipient)
         rec.update(status=True, file=crypto.cache_filename(rec["sha"]), fetched_at=now)
         summary.premium_fetched += 1
-    elif out.kind == "premium_denied":
-        summary.premium_denied += 1
     else:
         summary.failed += 1
 
