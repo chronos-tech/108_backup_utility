@@ -1,6 +1,6 @@
-"""Metadata storage: ``data/cache.json`` and ``data/premium.json``.
+"""Metadata storage: ``data/cache.json``, ``data/premium.json`` and ``data/denied.json``.
 
-Both files are plain JSON objects ``{ "<AES token>": {record}, ... }``.
+All files are plain JSON objects ``{ "<AES token>": {record}, ... }``.
 Plaintext URLs exist only in memory (``Registry._urls`` / ``Registry._index``).
 
 Safety properties
@@ -35,6 +35,7 @@ log = logging.getLogger(__name__)
 
 CACHE_PATH = "data/cache.json"
 PREMIUM_PATH = "data/premium.json"
+DENIED_PATH = "data/denied.json"
 LOCK_PATH = "data/.lock"
 VALID_TYPES = ("post", "page")
 
@@ -137,7 +138,7 @@ def verify_append_only(
 # ---------------------------------------------------------------- Registry
 
 class Registry:
-    """Both metadata files plus an in-memory plaintext index."""
+    """All metadata files plus an in-memory plaintext index."""
 
     def __init__(
         self,
@@ -145,17 +146,20 @@ class Registry:
         key: bytes,
         cache: dict[str, dict[str, Any]],
         premium: dict[str, dict[str, Any]],
+        denied: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.root = Path(root)
         self._key = key
         self.cache = cache
         self.premium = premium
+        self.denied = denied if denied is not None else {}
         self._urls: dict[str, str] = {}      # token -> normalized URL (memory only)
         self._index: dict[str, str] = {}     # normalized URL -> token
         self._build_index()
 
     def __repr__(self) -> str:  # never reveal contents
-        return f"Registry(cache={len(self.cache)}, premium={len(self.premium)})"
+        return (f"Registry(cache={len(self.cache)}, premium={len(self.premium)}, "
+                f"denied={len(self.denied)})")
 
     # -- loading ----------------------------------------------------------
     @classmethod
@@ -163,7 +167,8 @@ class Registry:
         root = Path(root)
         cache = read_json_object(root / CACHE_PATH)
         premium = read_json_object(root / PREMIUM_PATH)
-        return cls(root, key, cache, premium)
+        denied = read_json_object(root / DENIED_PATH)
+        return cls(root, key, cache, premium, denied)
 
     def _build_index(self) -> None:
         # Recover from an interrupted cache->premium move: same token in both
@@ -171,10 +176,15 @@ class Registry:
         for token in [t for t in self.cache if t in self.premium]:
             log.warning("Recovered an interrupted premium move; dropping stale cache record.")
             del self.cache[token]
+        # Same for an interrupted premium->denied move: the denied copy is authoritative.
+        for token in [t for t in self.premium if t in self.denied]:
+            log.warning("Recovered an interrupted denied move; dropping stale premium record.")
+            del self.premium[token]
 
         for name, section, is_premium in (
             ("cache.json", self.cache, False),
             ("premium.json", self.premium, True),
+            ("denied.json", self.denied, True),
         ):
             for token, rec in section.items():
                 url = crypto.decrypt_url(self._key, token)  # CryptoError -> stop
@@ -214,7 +224,7 @@ class Registry:
         if url in self._index:
             return False
         token = crypto.encrypt_url(self._key, url)
-        while token in self.cache or token in self.premium:  # astronomically unlikely
+        while token in self.cache or token in self.premium or token in self.denied:  # astronomically unlikely
             token = crypto.encrypt_url(self._key, url)
         sha = crypto.url_sha256(url)
         self.cache[token] = {
@@ -246,10 +256,31 @@ class Registry:
         self.premium[token] = rec
         return rec
 
+    def move_to_denied(self, token: str, http_status: int | None, now: str) -> dict[str, Any]:
+        """Move a premium record the session cannot access into denied.json."""
+        old = self.premium.pop(token)
+        rec = {
+            "status": False,
+            "sha": old["sha"],
+            "file": None,
+            "type": old["type"],
+            "registered_at": old.get("registered_at"),
+            "detected_at": old.get("detected_at"),
+            "denied_at": now,
+            "last_checked_at": now,
+            "http_status": http_status,
+        }
+        self.denied[token] = rec
+        return rec
+
     # -- persistence ------------------------------------------------------
     def save(self) -> None:
-        """Write premium first, then cache, so an interruption never loses a URL."""
-        for rel, data in ((PREMIUM_PATH, self.premium), (CACHE_PATH, self.cache)):
+        """Write denied, then premium, then cache, so an interruption never loses a URL."""
+        for rel, data in (
+            (DENIED_PATH, self.denied),
+            (PREMIUM_PATH, self.premium),
+            (CACHE_PATH, self.cache),
+        ):
             path = self.root / rel
             payload = serialize(data)
             try:

@@ -90,6 +90,7 @@ class Config:
     delay_min: float = 2.0
     delay_max: float = 5.0
     max_valid_pages: int = 0  # stop after N validly cached pages; 0 = download all
+    max_premium_pages: int = 0  # premium mode: attempt at most N premium pages; 0 = all
     max_runtime_minutes: float = 0.0  # graceful stop after this long; 0 = no limit
     user_agent: str = DEFAULT_USER_AGENT
 
@@ -139,6 +140,9 @@ class Config:
         max_valid = int(_parse_number(
             _opt(env, "MAX_VALID_PAGES"), "MAX_VALID_PAGES", 0, 0, 1_000_000,
             errors, integer=True))
+        max_premium = int(_parse_number(
+            _opt(env, "MAX_PREMIUM_PAGES"), "MAX_PREMIUM_PAGES", 0, 0, 1_000_000,
+            errors, integer=True))
         max_runtime = _parse_number(
             _opt(env, "MAX_RUNTIME_MINUTES"), "MAX_RUNTIME_MINUTES", 0.0, 0, 10_000, errors)
         user_agent = _opt(env, "USER_AGENT") or DEFAULT_USER_AGENT
@@ -159,6 +163,7 @@ class Config:
             delay_min=delay_min,
             delay_max=delay_max,
             max_valid_pages=max_valid,
+            max_premium_pages=max_premium,
             max_runtime_minutes=max_runtime,
             user_agent=user_agent,
         )
